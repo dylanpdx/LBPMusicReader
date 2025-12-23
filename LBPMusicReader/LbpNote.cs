@@ -12,6 +12,7 @@ namespace LBPMusicReader
 		public int length { get; set; }
 		public int startTime { get; set; }
 		public int globalStartTime { get; set; }
+		public int instrumentId { get; set; }
 		public int channelId { get; set; }
 	}
 }

@@ -31,16 +31,31 @@ namespace LBPMusicReader
 			MidiEventCollection events = new MidiEventCollection(1, 70);
 			// set bpm
 			var tempoEvent = new TempoEvent(60000000 / tempo, 0);
+
+			var uniqueInstruments = sortedNotes.Select(n => n.instrumentId).Distinct().ToList();
+			if (uniqueInstruments.Count > 16)
+				throw new Exception("Too many unique instruments for MIDI export (max 16).");
+			
+			var instrumentChannelMap = new Dictionary<int, int>();
+			for (int i = 0; i < uniqueInstruments.Count; i++)
+			{
+				instrumentChannelMap[uniqueInstruments[i]] = i + 1;
+
+				var programChangeEvent = new PatchChangeEvent(0, i + 1, (int)InstrumentMappings.GetMidiInstrument(uniqueInstruments[i]));
+				events.AddEvent(programChangeEvent, 1);
+			}
+
 			events.AddEvent(tempoEvent, 0);
 			foreach (var note in sortedNotes)
 			{
-				events.AddEvent(new NoteOnEvent(note.globalStartTime, 1, note.NoteId, 100, 0), note.channelId);
-				events.AddEvent(new NoteEvent(note.globalStartTime + note.length, 1, MidiCommandCode.NoteOff, note.NoteId, 0), note.channelId);
+				note.channelId = instrumentChannelMap[note.instrumentId];
+				events.AddEvent(new NoteOnEvent(note.globalStartTime, note.channelId, note.NoteId, 100, 0),0);
+				events.AddEvent(new NoteEvent(note.globalStartTime + note.length, note.channelId, MidiCommandCode.NoteOff, note.NoteId, 0),0);
 			}
 			MidiFile.Export(filename, events);
 		}
 
-		static LbpNote[] decodeInstrumentNotes(JToken instrument,int channelId,float componentX)
+		static LbpNote[] decodeInstrumentNotes(JToken instrument,int instrumentType,float componentX)
 		{
 			List<LbpNote> tnotes = new List<LbpNote>();
 			var mult = 17.5f; // TODO: find out what this multiplier actually means
@@ -57,18 +72,32 @@ namespace LBPMusicReader
 						NoteId = (int)note["y"],
 						startTime = (int)note["x"],
 						globalStartTime = (int)((((componentX / INGAME_NOTE_WIDTH) * INGAME_PAGE_SIZE) + (int)note["x"]) * mult),
-						channelId = channelId
+						instrumentId = instrumentType,
 					};
 				}
 				else
 				{
-					if (lastNote == null)
-						continue;//throw new Exception("End note found without a starting note.");
+					if (lastNote != null)
+					{
 					var endGlobalStartTime = (int)((((componentX / INGAME_NOTE_WIDTH) * INGAME_PAGE_SIZE) + (int)note["x"]) * mult);
 					lastNote.length = endGlobalStartTime - lastNote.globalStartTime;
 					tnotes.Add(lastNote);
-					Console.WriteLine($"NoteId: {lastNote.NoteId}, StartTime: {lastNote.startTime} ({lastNote.globalStartTime}), Length: {lastNote.length}");
+						//Console.WriteLine($"NoteId: {lastNote.NoteId}, StartTime: {lastNote.startTime} ({lastNote.globalStartTime}), Length: {lastNote.length}");
 					lastNote = null;
+				}
+					else
+					{
+						// Unsure what these "only end" notes are, but they exist in some sequencers
+						tnotes.Add(new LbpNote()
+						{
+							NoteId = (int)note["y"],
+							startTime = (int)note["x"],
+							globalStartTime = (int)((((componentX / INGAME_NOTE_WIDTH) * INGAME_PAGE_SIZE) + (int)note["x"]) * mult),
+							length = (int)mult,
+							instrumentId = instrumentType,
+						});
+					}
+					
 				}
 			}
 			return tnotes.ToArray();
@@ -76,7 +105,6 @@ namespace LBPMusicReader
 
         static LbpNote[] decodeSequencer(JObject obj)
         {
-			List<int> chs = new List<int>();
 			List<LbpNote> tnotes = new List<LbpNote>();
 			var microchip = obj["PMicrochip"];
 			var microchipWidth = (float)microchip["circuitBoardSizeX"];
@@ -141,10 +169,8 @@ namespace LBPMusicReader
 
 			foreach (var instrument in instruments)
 			{
-				if (!chs.Contains((int)instrument.componentY))
-					chs.Add((int)instrument.componentY);
-				int channelId = chs.IndexOf((int)instrument.componentY) + 1;
-				var instrumentNotes = decodeInstrumentNotes(instrument.rawData, channelId, instrument.componentX);
+				var instrumentType = (int)instrument.rawData["instrument"]["value"];
+				var instrumentNotes = decodeInstrumentNotes(instrument.rawData, instrumentType, instrument.componentX);
 				tnotes.AddRange(instrumentNotes);
 			}
 			return tnotes.ToArray();
@@ -166,9 +192,10 @@ namespace LBPMusicReader
 					Console.WriteLine($"No notes found, skipping export.");
 					return;
 				}
-				Console.WriteLine($"---");
 
 				ExportNotes(tnotes.ToArray(), $"{name}.mid", (int)getSequencerTempo(obj));
+
+				Console.WriteLine($"---");
 			}
 			else
 			{
@@ -222,6 +249,8 @@ namespace LBPMusicReader
             {
                 ProcessThing(thing as JObject);
 			}
+			Console.WriteLine($"Parsed {sequencersExported} sequencers.");
+			Console.ReadLine();
 		}
 	}
 }
